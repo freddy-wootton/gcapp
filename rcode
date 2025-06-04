@@ -1,0 +1,175 @@
+# ----- Packages ----- #
+library(shiny)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+
+# ----- Define CO2 parameters (kg per passenger per km) ----- #
+co2_factors <- data.frame(
+  Transport = c("Car", "Bus", "Train", "Plane"),
+  CO2_per_km = c(0.17, 0.09, 0.04, 0.13)  # kg/passenger/km
+)
+
+# ----- Example data for comparison ----- #
+example_data <- data.frame(
+  Society = c("Society A", "Society B", "Society C", "Society D"),
+  Emissions = c(1500, 1000, 500, 50) )
+
+# ----- Create user interface ----- #
+ui <- fluidPage(
+  titlePanel("Academic Year GHG Emissions Calculator"),   # Title
+  # Side panel
+  sidebarLayout(
+    sidebarPanel(
+      h4("Add New Trip"),
+      numericInput("passengers", "Number of Passengers", value = 1, min = 1),
+      numericInput("distance", "Distance (km)", value = 10, min = 0),
+      selectInput("month", "Month", 
+                  choices = c("September", "October", "November", "December",
+                              "January", "February", "March", "April",
+                              "May", "June", "July", "August")),
+      selectInput("transport", "Form of Transport", 
+                  choices = c("Car", "Bus", "Train", "Plane")),
+      actionButton("add", "Add Trip"),
+      actionButton("reset", "Reset All"),
+      hr(),
+      h4("CO2 Emission Factors (kg/passenger/km)"),
+      tableOutput("co2_table")
+    ),
+    # Main contents (plots)
+    mainPanel(
+      h4("Recorded Trips"),
+      tableOutput("trip_table"),
+      br(),
+      plotOutput("comparison_plot"),
+      plotOutput("cumulative_plot")
+    )))
+
+# ----- Server side ----- #
+server <- function(input, output, session) {
+  # Reactive value to store trips
+  trips <- reactiveVal(data.frame(
+    Passengers = numeric(),
+    Distance = numeric(),
+    Month = character(),
+    Transport = character(),
+    Emissions_kg = numeric(),
+    Date = character()
+  ))
+  
+  # Display CO2 parameter table
+  output$co2_table <- renderTable({
+    co2_factors
+  })
+  
+  # Add a new trip
+  observeEvent(input$add, {
+    # Pick CO2 factor for selected transport
+    co2_factor <- co2_factors %>% 
+      filter(Transport == input$transport) %>% 
+      pull(CO2_per_km)
+    
+    # Calculate emissions 
+    emissions_kg <- input$passengers * input$distance * co2_factor
+    
+    # Create new trip entry
+    new_trip <- data.frame(
+      Passengers = input$passengers,
+      Distance = input$distance,
+      Month = input$month,
+      Transport = input$transport,
+      Emissions_kg = emissions_kg,
+      Date = as.character(Sys.time())  # Timestamp for ordering
+    )
+    
+    # Add to existing trips
+    trips(rbind(trips(), new_trip))
+  })
+  
+  # Reset all trips
+  observeEvent(input$reset, {
+    trips(data.frame(
+      Passengers = numeric(),
+      Distance = numeric(),
+      Month = character(),
+      Transport = character(),
+      Emissions_kg = numeric(),
+      Date = character()
+    ))
+  })
+  
+  # Display trips table
+  output$trip_table <- renderTable({
+    req(nrow(trips()) > 0)
+    trips() %>% 
+      select(-Date) %>% 
+      rename("CO2 (kg)" = Emissions_kg)
+  })
+  
+  # Bar chart comparison plot
+  output$comparison_plot <- renderPlot({
+    req(nrow(trips()) > 0)
+    
+    # Calculate user's total emissions
+    user_total <- sum(trips()$Emissions_kg)
+    user_data <- data.frame(Society = "Your Trips", Emissions = user_total)
+    
+    # Combine with example data
+    plot_data <- rbind(example_data, user_data)
+    
+    # Create plot
+    ggplot(plot_data, aes(x = Society, y = Emissions, fill = Emissions)) +
+      geom_bar(stat = "identity") +
+      scale_fill_gradient(low = "green", high = "red") +
+      geom_text(aes(label = paste0(Emissions, " kg"), vjust = -0.5), size = 5) +
+      labs(title = "Total GHG Emissions by Society",
+           y = "Emissions (kg)",
+           x = "") +
+      theme_minimal(base_size = 14) +
+      theme(legend.position = "none",
+            panel.grid.major.x = element_blank(),
+            plot.title = element_text(hjust = 0.5, size = 16, face = "bold")) +
+      scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+  })
+  
+  # Cumulative emissions plot - FIXED VERSION
+  output$cumulative_plot <- renderPlot({
+    req(nrow(trips()) > 0)
+    
+    # Define academic year order with numeric representation
+    month_order <- data.frame(
+      Name = c("September", "October", "November", "December",
+               "January", "February", "March", "April",
+               "May", "June", "July", "August"),
+      Order = 1:12
+    )
+    
+    # Process trip data
+    cumulative_data <- trips() %>%
+      group_by(Month) %>%
+      summarise(Monthly_Emissions = sum(Emissions_kg)) %>%
+      right_join(month_order, by = c("Month" = "Name")) %>%
+      mutate(Monthly_Emissions = replace_na(Monthly_Emissions, 0)) %>%
+      arrange(Order) %>%
+      mutate(Cumulative = cumsum(Monthly_Emissions),
+             Month = factor(Month, levels = month_order$Name))
+    
+    # Create plot
+    ggplot(cumulative_data, aes(x = Month, y = Cumulative, group = 1)) +
+      geom_line(color = "blue", linewidth = 1.5) +
+      geom_point(color = "red", size = 3) +
+      geom_text(aes(label = round(Cumulative, 1)), vjust = -1, size = 5) +
+      labs(title = "Cumulative GHG Emissions Over Academic Year",
+           y = "Cumulative Emissions (kg)") +
+      theme_minimal(base_size = 14) +
+      theme(panel.grid.minor = element_blank(),
+            panel.grid.major.x = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1),
+            plot.title = element_text(hjust = 0.5, size = 16, face = "bold")) +
+      scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+  })
+}
+
+# ----- Deploy app ----- #
+shinyApp(ui = ui, server = server)
